@@ -21,7 +21,7 @@ import type { WorkerKernel } from "./core/worker-host.ts";
 import { webPlatform } from "./web/platform.ts";
 
 export * from "./core/index.ts";
-export { DATA_DISK_NAME, DATA_DISK_VERSION, IdbStore, dataDiskStore, importDataDisk, openDataDisk, openDistroDisk, openHttpDisk, resetDataDisk, resetHttpDisk } from "./web/disk.ts";
+export { DATA_DISK_NAME, DATA_DISK_VERSION, IdbStore, dataDiskStore, importDataDisk, openDataDisk, openDistroDisk, openHttpDisk, openSeedDisk, resetDataDisk, resetHttpDisk } from "./web/disk.ts";
 export type { DataDiskNameOptions, HttpDiskOptions, IdbStoreOptions, OpenDataDiskOptions } from "./web/disk.ts";
 export { DEFAULT_MEMORY_FALLBACK_MIB, autoMemoryMiB, isMobile } from "./web/memory.ts";
 export { webCpuBlocker } from "./web/cpu.ts";

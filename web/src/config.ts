@@ -193,7 +193,17 @@ export function saveSettings(s: Record<string, string>): boolean {
 	}
 }
 
+export interface PortableRoot {
+	url: string;
+	name: string;
+	version: string;
+	seed: string;
+	generationUrl: string | null;
+}
+
 export interface Config {
+	/** A mutable direct-root browser machine seeded from ?disk=, or null for the distro flow. */
+	portable: PortableRoot | null;
 	/** The settings this load read: the saved ones with the URL's on top (?net=0 as wisp=0). */
 	settings: Record<string, string>;
 	/** The kernel this page boots on one CPU: the base bundle unkernel.wasm (its UP kernel). */
@@ -387,8 +397,20 @@ export function readConfig(search: string = location.search, saved: Record<strin
 	const memParam = params.get("mem");
 	const auto = autoMemoryMiB({ mobile });
 	const fixed = memParam !== null && Number(memParam) > 0;
+	const disk = url.get("disk");
+	const machine = url.get("machine") || "phone";
+	const seed = url.get("seed") || disk || "seed";
+	const diskVersion = url.get("disk-version") || "v1";
+	const generation = url.get("generation");
+	const portable = disk ? {
+		url: new URL(disk, location.href).href,
+		name: machine,
+		version: diskVersion,
+		seed,
+		generationUrl: generation ? new URL(generation, location.href).href : null,
+	} : null;
 	const append = params.get("append");
-	const root = params.get("root") === "initramfs" ? "initramfs" : null;
+	const root = !portable && params.get("root") === "initramfs" ? "initramfs" : null;
 	const wispParam = params.get("wisp");
 	const wisp = wispParam && wispParam !== "0" ? wispParam.split(",").map((s) => s.trim()).filter(Boolean) : null;
 	// Worker mode by default where shared memory works (input and frames then
@@ -425,28 +447,31 @@ export function readConfig(search: string = location.search, saved: Record<strin
 	if (distroAsked === "none") distroParam = "none";
 	else if (distroAsked && names.includes(distroAsked)) distroParam = distroAsked;
 	else if (distroAsked) distroWhy = `distro ${distroAsked} is not an image of this page (${[...names, "none"].join(", ")}): booting ${DEFAULT_DISTRO}`;
-	const distro = DISTROS_OFFERED.find((d) => d.name === distroParam) ?? null;
+	const distro = portable ? null : DISTROS_OFFERED.find((d) => d.name === distroParam) ?? null;
+	if (portable) distroParam = "none";
 	const autosuspend = parseAutoSuspend(params.get("autosuspend"), mobile);
 	// Guest GL: on by default where the display is (the renderer loads on the guest's first GL use).
 	const glAsked = params.has("gl");
 	const glParam = glAsked ? params.get("gl") === "1" : glDefault(params.get("display") !== "0");
 	const glBlocked = glBlocker();
-	const glWhy = !glParam ? null : glBlocked ?? (GL_DISTROS.includes(distro?.name ?? "none") ? null : `guest GL needs ${GL_DISTROS.join(" or ")} (its Mesa has the virgl driver), not ${distro?.name ?? "the base shell"}`);
+	const glWhy = portable ? "disabled for a direct-root portable machine" : !glParam ? null : glBlocked ?? (GL_DISTROS.includes(distro?.name ?? "none") ? null : `guest GL needs ${GL_DISTROS.join(" or ")} (its Mesa has the virgl driver), not ${distro?.name ?? "the base shell"}`);
+	const directCmdline = "console=hvc0 root=/dev/wda rw";
 	return {
+		portable,
 		settings: Object.fromEntries(params),
 		kernelUrl: kernelUrl.pathname,
 		distro,
 		distroParam,
 		distroWhy,
-		guest: distro?.name ?? "none",
+		guest: portable ? "nixos" : distro?.name ?? "none",
 		append: append || null,
 		memMiB: fixed ? Number(memParam) : auto.mib,
 		memWhy: fixed ? `set to ${memParam} MiB` : auto.why,
 		memAutoMiB: auto.mib,
 		memParam: fixed ? memParam : null,
 		memFallbackMiB: [...DEFAULT_MEMORY_FALLBACK_MIB],
-		cmdline: root ? `${append || DEFAULT_CMDLINE} kw.root=${root}` : append || DEFAULT_CMDLINE,
-		baseCmdline: append || DEFAULT_CMDLINE,
+		cmdline: portable ? append || directCmdline : root ? `${append || DEFAULT_CMDLINE} kw.root=${root}` : append || DEFAULT_CMDLINE,
+		baseCmdline: portable ? append || directCmdline : append || DEFAULT_CMDLINE,
 		cmdlineGiven: !!append || !!root,
 		net: wispParam !== "0",
 		wisp: wisp?.length ? wisp : null,
@@ -454,7 +479,7 @@ export function readConfig(search: string = location.search, saved: Record<strin
 		jit: params.get("jit") !== "0",
 		display: params.get("display") !== "0",
 		sound: params.get("sound") !== "0",
-		data: params.get("data") !== "0",
+		data: portable ? true : params.get("data") !== "0",
 		root,
 		worker: workerParam || cpus > 1,
 		workerParam,
@@ -486,7 +511,7 @@ export function readConfig(search: string = location.search, saved: Record<strin
 		// Not settings (SETTING_NAMES): this load's URL only.
 		glStrictWaits: url.get("glwait") === "strict",
 		gpu: glParam && !glWhy && url.get("gpu") !== "0" && params.get("display") !== "0",
-		shm: url.get("shm") !== "0",
+		shm: !portable && url.get("shm") !== "0",
 		wlGpu: url.get("wlgpu") !== "0",
 		mobile,
 		coarse,

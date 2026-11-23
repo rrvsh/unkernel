@@ -5,7 +5,8 @@
 // module owns the browser side: the template, the one-tab-at-a-time lock,
 // storage persistence and quota, and export, import and reset. boot.ts
 // calls attachDataDisk() and wires the rest to KW.*.
-import { DATA_DISK_NAME, gzipBlob, importDataDisk, openDataDisk, resetDataDisk, type CowDisk } from "./sdk.ts";
+import { DATA_DISK_NAME, gzipBlob, importDataDisk, openDataDisk, openSeedDisk, resetDataDisk, type CowDisk } from "./sdk.ts";
+import type { PortableRoot } from "./config.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -126,16 +127,28 @@ export async function attachDataDisk({ enabled, bundled, log, onError }: {
 	}
 }
 
+/** Open a direct-root portable disk. Unlike /data, another tab is refused rather than given a fresh root. */
+export async function attachSeedDisk(root: PortableRoot, { log, onError }: {
+	log: (m: string) => void;
+	onError: (e: unknown) => void;
+}): Promise<DataAttach> {
+	if (typeof indexedDB === "undefined") return { disk: null, lock: null, reason: "no IndexedDB in this browser" };
+	const lock = await acquireDiskLock(root.name);
+	if (!lock.held) return { disk: null, lock, reason: "this machine is open in another tab" };
+	const disk = await openSeedDisk({ ...root, log, onError });
+	return { disk, lock, from: root.url };
+}
+
 /** Download the disk's current content as a .kwsparse.gz file. */
-export async function exportDataDisk(disk: CowDisk): Promise<{ name: string; blocks: number; bytes: number }> {
+export async function exportDataDisk(disk: CowDisk, prefix = "kwdata"): Promise<{ name: string; blocks: number; bytes: number }> {
 	const { parts, blocks } = await disk.exportParts();
-	return downloadKwsparse(parts, blocks);
+	return downloadKwsparse(parts, blocks, prefix);
 }
 
 /** Download kwsparse parts (CowDisk.exportParts(), here or from the kernel worker) as a .kwsparse.gz file. */
-export async function downloadKwsparse(parts: BlobPart[], blocks: number): Promise<{ name: string; blocks: number; bytes: number }> {
+export async function downloadKwsparse(parts: BlobPart[], blocks: number, prefix = "kwdata"): Promise<{ name: string; blocks: number; bytes: number }> {
 	const blob = await gzipBlob(parts);
-	const name = `kwdata-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.kwsparse.gz`;
+	const name = `${prefix}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.kwsparse.gz`;
 	const a = document.createElement("a");
 	a.href = URL.createObjectURL(blob);
 	a.download = name;

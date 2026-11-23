@@ -22,6 +22,8 @@
 //          "data"  the persistent data disk (browsers: IndexedDB, from the
 //                  kernel bundle's unkernel.datadisk template or bytes;
 //                  the page's /data, openDataDisk())
+//          "seed"  a persistent browser disk initialized once from a remote
+//                  uncompressed kwsparse image (openSeedDisk())
 //   net    a NetStack over a backend: "direct" (Node: host sockets, the
 //          CLI's default) or "wisp" (a Wisp server; everywhere, with
 //          `routes` answered by fetch(), net-fetch.ts)
@@ -80,7 +82,21 @@ export interface DataDiskSpec extends SpecCommon {
 	snapshotLimit?: number;
 }
 
-export type DiskSpec = FileDiskSpec | HttpDiskSpec | DataDiskSpec;
+/** A persistent browser disk seeded once from a range-readable uncompressed kwsparse image. */
+export interface SeedDiskSpec extends SpecCommon {
+	kind: "seed";
+	/** Absolute URL after the page prepares a worker spec. */
+	url: string;
+	/** Stable browser-machine name and disk-format version. */
+	name: string;
+	version: string;
+	/** Identity of this initialization seed. A newer seed never replaces an initialized disk. */
+	seed: string;
+	/** Number of payload blocks fetched and committed per transaction. */
+	batchBlocks?: number;
+}
+
+export type DiskSpec = FileDiskSpec | HttpDiskSpec | DataDiskSpec | SeedDiskSpec;
 
 /** The network device: a NetStack over a backend. */
 export interface NetSpec extends SpecCommon {

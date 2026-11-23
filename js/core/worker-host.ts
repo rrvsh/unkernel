@@ -69,7 +69,7 @@ function toWorkerDisks(specs: DiskSpec[], platform: Platform): [DiskSpec[], Arra
 			transfer.push(copy.buffer);
 			return { ...s, template: copy };
 		}
-		if (s.kind === "http" && !hasScheme(s.url)) {
+		if ((s.kind === "http" || s.kind === "seed") && !hasScheme(s.url)) {
 			const url = platform.absoluteUrl?.(s.url);
 			if (!url) throw new BootError("download", `cannot resolve the relative disk URL ${s.url} for the worker`);
 			return { ...s, url };

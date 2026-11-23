@@ -80,8 +80,14 @@ export function encodeKwsparse({ size, blockSize = 4096, blocks }: {
 	return out;
 }
 
-/** Parse an uncompressed kwsparse image (see gunzipIfNeeded). The result views `bytes`. */
-export function decodeKwsparse(bytes: Uint8Array | ArrayBuffer): KwsparseImage {
+export interface KwsparseHeader {
+	size: number;
+	blockSize: number;
+	blocks: number;
+}
+
+/** Parse the fixed 24-byte header, without requiring the index or payload. */
+export function decodeKwsparseHeader(bytes: Uint8Array | ArrayBuffer): KwsparseHeader {
 	const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
 	if (u8.length < HEADER) throw new Error("kwsparse: truncated header");
 	for (let i = 0; i < 8; i++)
@@ -89,8 +95,17 @@ export function decodeKwsparse(bytes: Uint8Array | ArrayBuffer): KwsparseImage {
 	const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
 	const size = Number(dv.getBigUint64(8, true));
 	const blockSize = dv.getUint32(16, true);
-	const n = dv.getUint32(20, true);
+	const blocks = dv.getUint32(20, true);
+	if (!Number.isSafeInteger(size) || size <= 0) throw new Error(`kwsparse: bad size ${size}`);
 	if (!blockSize || blockSize & (blockSize - 1) || blockSize < 512) throw new Error(`kwsparse: bad block size ${blockSize}`);
+	return { size, blockSize, blocks };
+}
+
+/** Parse an uncompressed kwsparse image (see gunzipIfNeeded). The result views `bytes`. */
+export function decodeKwsparse(bytes: Uint8Array | ArrayBuffer): KwsparseImage {
+	const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+	const { size, blockSize, blocks: n } = decodeKwsparseHeader(u8);
+	const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
 	const dataAt = HEADER + 8 * n;
 	if (u8.length !== dataAt + n * blockSize)
 		throw new Error(`kwsparse: ${u8.length} bytes, expected ${dataAt + n * blockSize} for ${n} blocks`);

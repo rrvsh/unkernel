@@ -622,29 +622,34 @@ export function createUi(cfg: Config) {
 
 	// ---- data disk ------------------------------------------------------------
 	// The actions live in boot.ts (KW.exportData / importData / resetData).
+	const diskLabel = cfg.portable ? `${cfg.portable.name} root disk` : "data disk";
+	const diskContents = cfg.portable ? "the machine's entire NixOS root" : "/data";
 	function dataAction(name: "exportData" | "importData" | "resetData", run: () => Promise<unknown>) {
-		if (!KW[name]) { ui.toast("The data disk is not ready yet"); return; }
-		if (dataBusy) { ui.toast("The data disk is busy; wait for it to finish"); return; }
+		if (!KW[name]) { ui.toast(`The ${diskLabel} is not ready yet`); return; }
+		if (dataBusy) { ui.toast(`The ${diskLabel} is busy; wait for it to finish`); return; }
 		dataBusy = name !== "exportData";
 		run().finally(() => { dataBusy = false; }).catch((e: Error) => KW.report("data", `Data disk: ${e?.message ?? String(e)}`, e?.stack ?? "", false));
 	}
 	function dataExport() {
 		dataAction("exportData", async () => {
-			ui.toast("Exporting the data disk…");
+			ui.toast(`Exporting the ${diskLabel}…`);
 			const r = await KW.exportData!();
 			ui.toast(`Saved ${r.name} (${fmtMiB(r.bytes)})`);
 		});
 	}
 	/** Without a file, asks first; true: go on and pick the file (the OK click still counts as a user gesture). */
 	async function dataImport(f?: File): Promise<boolean> {
-		if (!KW.importData) { ui.toast("The data disk is not ready yet"); return false; }
-		if (!f) return ui.ask({ title: "import data disk", msg: "Replace /data with a .kwsparse.gz file? Its current content is lost, and the page reloads.", ok: "Choose file…", danger: true });
+		if (!KW.importData) { ui.toast(`The ${diskLabel} is not ready yet`); return false; }
+		if (!f) return ui.ask({ title: `import ${diskLabel}`, msg: `Replace ${diskContents} with a .kwsparse or .kwsparse.gz file? Its current content is lost, and the page reloads.`, ok: "Choose file…", danger: true });
 		dataAction("importData", () => { ui.toast(`Importing ${f.name}…`); return KW.importData!(f); });
 		return true;
 	}
 	async function dataReset() {
-		if (!await ui.ask({ title: "reset data disk", msg: "Everything in /data is deleted, and the page reloads.", ok: "Reset", danger: true })) return;
-		dataAction("resetData", () => { ui.toast("Resetting the data disk… the page reloads when it is done"); return KW.resetData!(); });
+		const resetMessage = cfg.portable
+			? `Delete this browser's ${cfg.portable.name} machine and initialize it again from the published seed? All changes in its NixOS root are lost.`
+			: "Everything in /data is deleted, and the page reloads.";
+		if (!await ui.ask({ title: `reset ${diskLabel}`, msg: resetMessage, ok: "Reset", danger: true })) return;
+		dataAction("resetData", () => { ui.toast(`Resetting the ${diskLabel}… the page reloads when it is done`); return KW.resetData!(); });
 	}
 	// Safe mode: one boot on the plain image root (kw.root=initramfs), with
 	// /data still mounted, to repair or turn off an overlay root (kw-overlay).

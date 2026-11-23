@@ -70,7 +70,8 @@ export function Panel() {
 					<section data-pane="guest" {...pane("guest")}>
 						<H3>Terminal</H3>
 						<FontSize />
-						<H3>Data disk</H3>
+						{KW.config.portable && <><H3>NixOS generations</H3><SystemGenerations /></>}
+						<H3>{KW.config.portable ? "Root disk" : "Data disk"}</H3>
 						<DataDisk />
 						<H3>Preview</H3>
 						<PreviewOpen />
@@ -115,24 +116,91 @@ const H3 = ({ children }: { children: ReactNode }) => (
 	</h3>
 );
 
+interface GenerationManifest {
+	version: number;
+	seedId: string;
+	system: string;
+	cache: string | null;
+}
+
+function SystemGenerations() {
+	const ui = KW.ui!;
+	const portable = KW.config.portable!;
+	const [manifest, setManifest] = useState<GenerationManifest | null>(null);
+	const [error, setError] = useState("");
+
+	useEffect(() => {
+		if (!portable.generationUrl) return;
+		const controller = new AbortController();
+		fetch(portable.generationUrl, { cache: "no-store", signal: controller.signal })
+			.then(async (response) => {
+				if (!response.ok) throw new Error(`HTTP ${response.status}`);
+				const value = await response.json() as Partial<GenerationManifest>;
+				if (typeof value.system !== "string" || typeof value.seedId !== "string") throw new Error("invalid generation manifest");
+				setManifest(value as GenerationManifest);
+			})
+			.catch((reason: unknown) => {
+				if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
+			});
+		return () => controller.abort();
+	}, [portable.generationUrl]);
+
+	const run = (action: "check" | "upgrade" | "rollback" | "generations" | "gc") => {
+		if (!KW.term) { ui.toast("The guest terminal is not ready yet."); return; }
+		const question = action === "upgrade"
+			? "Upgrade to the published NixOS generation? Your files and older system generation remain on the root disk."
+			: action === "rollback"
+				? "Roll back to the previous NixOS generation?"
+				: action === "gc"
+					? "Delete old NixOS generations and collect their unused store paths? This cannot be undone."
+					: null;
+		if (question && !confirm(question)) return;
+		KW.term.send(`unkernel-upgrade ${action}\r`);
+		ui.closePanel();
+		KW.term.focus();
+	};
+
+	const available = manifest?.system.split("/").pop() ?? null;
+	return (
+		<>
+			<p className="text-muted">Seed revision: <code className="break-all text-fg">{portable.seed}</code></p>
+			{portable.generationUrl ? (
+				<p className="mt-1 text-muted">Available: {available
+					? <code className="break-all text-fg" title={manifest!.system}>{available}</code>
+					: error ? <span className="text-err">manifest unavailable ({error})</span> : <span className="text-faint">checking…</span>}</p>
+			) : <p className="mt-1 text-faint">This launch has no generation manifest.</p>}
+			<p className="mt-1 text-faint">Check prints the active and available revisions in the terminal.</p>
+			<div className="mt-3 flex flex-wrap gap-2">
+				<button type="button" className="btn btn-sm" disabled={!portable.generationUrl} onClick={() => run("check")}>Check</button>
+				<button type="button" className="btn btn-sm btn-primary" disabled={!manifest?.cache} onClick={() => run("upgrade")}>Upgrade</button>
+				<button type="button" className="btn btn-sm" onClick={() => run("rollback")}>Roll back</button>
+				<button type="button" className="btn btn-sm" onClick={() => run("generations")}>List</button>
+				<button type="button" className="btn btn-sm" onClick={() => run("gc")}>Garbage collect…</button>
+			</div>
+		</>
+	);
+}
+
 function DataDisk() {
 	const ui = KW.ui!;
 	const status = useStore((s) => s.dataStatus);
 	const safeNote = useStore((s) => s.safeNote);
 	const file = useRef<HTMLInputElement>(null);
+	const portable = KW.config.portable;
 	const safe = KW.config.root === "initramfs";
+	const label = portable ? `${portable.name} root disk` : "/data";
 	return (
 		<>
 			<p id="data-status" className="text-muted">{status}</p>
 			<p id="data-safe-note" hidden={!safeNote} className="mt-2 border-l-2 border-warn pl-3 text-fg">{safeNote}</p>
 			<div className="mt-3 flex flex-wrap gap-2">
-				<button id="data-export" type="button" className="btn btn-sm" title="Download /data as a .kwsparse.gz file" onClick={() => ui.dataExport()}>Export</button>
-				<button id="data-import" type="button" className="btn btn-sm" title="Replace /data with an exported file"
+				<button id="data-export" type="button" className="btn btn-sm" title={`Download ${label} as a .kwsparse.gz file`} onClick={() => ui.dataExport()}>Export</button>
+				<button id="data-import" type="button" className="btn btn-sm" title={`Replace ${label} with an exported file`}
 					onClick={async () => { if (await ui.dataImport() && file.current) { file.current.value = ""; file.current.click(); } }}>Import…</button>
-				<button id="data-reset" type="button" className="btn btn-sm" title="Start /data again from an empty file system" onClick={() => ui.dataReset()}>Reset</button>
-				<button id="data-safe" type="button" className="btn btn-sm"
+				<button id="data-reset" type="button" className="btn btn-sm" title={portable ? "Delete this browser machine and initialize it again from the published seed" : "Start /data again from an empty file system"} onClick={() => ui.dataReset()}>Reset</button>
+				{!portable && <button id="data-safe" type="button" className="btn btn-sm"
 					title={safe ? "Reboot with the overlay root and your changes on the data disk" : "Reboot with the plain image as the root (kw.root=initramfs), to repair an overlay root"}
-					onClick={() => ui.safeModeToggle()}>{safe ? "Leave safe mode" : "Safe mode"}</button>
+					onClick={() => ui.safeModeToggle()}>{safe ? "Leave safe mode" : "Safe mode"}</button>}
 				<input ref={file} type="file" id="data-file" accept=".gz,.kwsparse,application/gzip,application/octet-stream" hidden
 					onChange={(e) => { const f = e.currentTarget.files?.[0]; if (f) ui.dataImport(f); }} />
 			</div>

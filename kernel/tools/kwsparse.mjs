@@ -47,6 +47,41 @@ export function encodeImage(path, { gzip = true } = {}) {
 	return { bytes: gzip ? gzipSync(raw, { level: 9 }) : raw, size, blocks: indices.length, raw: raw.length };
 }
 
+/** Write an uncompressed image without retaining its non-zero block payload in memory. */
+export function encodeImageToFile(path, out) {
+	const input = fs.openSync(path, "r");
+	const tmp = `${out}.tmp`;
+	try {
+		const size = fs.fstatSync(input).size;
+		if (size % BLOCK) throw new Error(`${path}: size ${size} is not a multiple of ${BLOCK}`);
+		const chunk = new Uint8Array(1 << 20), indices = [];
+		for (let off = 0; off < size; off += chunk.length) {
+			const n = fs.readSync(input, chunk, 0, Math.min(chunk.length, size - off), off);
+			for (let at = 0; at < n; at += BLOCK) if (!isZeroBlock(chunk.subarray(at, at + BLOCK))) indices.push((off + at) / BLOCK);
+		}
+		const output = fs.openSync(tmp, "w");
+		try {
+			fs.writeSync(output, kwsparseHeader(size, BLOCK, indices));
+			for (let off = 0; off < size; off += chunk.length) {
+				const n = fs.readSync(input, chunk, 0, Math.min(chunk.length, size - off), off);
+				for (let at = 0; at < n; at += BLOCK) {
+					const block = chunk.subarray(at, at + BLOCK);
+					if (!isZeroBlock(block)) fs.writeSync(output, block);
+				}
+			}
+		} finally {
+			fs.closeSync(output);
+		}
+		fs.renameSync(tmp, out);
+		return { size, blocks: indices.length, raw: 24 + indices.length * (8 + BLOCK) };
+	} catch (error) {
+		fs.rmSync(tmp, { force: true });
+		throw error;
+	} finally {
+		fs.closeSync(input);
+	}
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const args = process.argv.slice(2);
 	const i = args.indexOf("-o");
@@ -54,10 +89,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 	const [cmd, input] = args;
 	const mib = (n) => (n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1048576).toFixed(1)} MiB`);
 	if (cmd === "encode" && input && out) {
-		const r = encodeImage(input, { gzip: out.endsWith(".gz") });
-		fs.writeFileSync(`${out}.tmp`, r.bytes);
-		fs.renameSync(`${out}.tmp`, out);
-		console.log(`kwsparse: ${out} (${mib(r.size)} disk, ${r.blocks} non-zero blocks, ${mib(r.raw)} raw, ${mib(r.bytes.length)} written)`);
+		if (out.endsWith(".gz")) {
+			const r = encodeImage(input);
+			fs.writeFileSync(`${out}.tmp`, r.bytes);
+			fs.renameSync(`${out}.tmp`, out);
+			console.log(`kwsparse: ${out} (${mib(r.size)} disk, ${r.blocks} non-zero blocks, ${mib(r.raw)} raw, ${mib(r.bytes.length)} written)`);
+		} else {
+			const r = encodeImageToFile(input, out);
+			console.log(`kwsparse: ${out} (${mib(r.size)} disk, ${r.blocks} non-zero blocks, ${mib(r.raw)} written)`);
+		}
 	} else if (cmd === "decode" && input && out) {
 		const r = await createImageFromKwsparse(out, fs.readFileSync(input));
 		console.log(`kwsparse: ${out} (${mib(r.size)}, ${r.blocks} blocks written)`);

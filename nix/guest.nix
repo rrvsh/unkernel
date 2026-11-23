@@ -8,6 +8,7 @@
 {
   boot.loader.grub.enable = false;
   boot.loader.systemd-boot.enable = false;
+  boot.modprobeConfig.enable = false;
 
   fileSystems."/" = {
     device = "/dev/wda";
@@ -31,7 +32,31 @@
 
   services.getty.autologinUser = lib.mkDefault "root";
 
-  users.users.root.initialHashedPassword = "";
+  # unkernel intentionally omits several physical-kernel sysctls. systemd-sysctl
+  # reports those missing paths with exit status 1, which must not make a live
+  # NixOS generation switch fail after the supported settings were applied.
+  systemd.services.systemd-sysctl.serviceConfig.SuccessExitStatus = [ 1 ];
+
+  systemd.services.unkernel-current-system = {
+    description = "Restore the active NixOS system links";
+    wantedBy = [ "sysinit.target" ];
+    before = [
+      "sysinit.target"
+      "systemd-tmpfiles-setup.service"
+    ];
+    unitConfig.DefaultDependencies = false;
+    serviceConfig.Type = "oneshot";
+    script = ''
+      activeSystem="$(${pkgs.coreutils}/bin/readlink -f /nix/var/nix/profiles/system)"
+      ${pkgs.coreutils}/bin/ln -sfn "$activeSystem" /run/current-system
+      ${pkgs.coreutils}/bin/ln -sfn "$activeSystem" /run/booted-system
+    '';
+  };
+
+  users.users.root = {
+    initialHashedPassword = "";
+    shell = pkgs.bashInteractive;
+  };
 
   environment.systemPackages = with pkgs; [
     fish

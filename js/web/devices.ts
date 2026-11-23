@@ -15,8 +15,8 @@
 
 import { BaseDisk, CowDisk, HttpBase } from "../core/block.ts";
 import { bundledBoot } from "../core/kernel.ts";
-import { coreDevices, extendDevices, type DataDiskSpec, type DeviceContext, type DeviceRegistry, type HttpDiskSpec } from "../core/devices.ts";
-import { IdbStore, openDataDisk } from "./disk.ts";
+import { coreDevices, extendDevices, type DataDiskSpec, type DeviceContext, type DeviceRegistry, type HttpDiskSpec, type SeedDiskSpec } from "../core/devices.ts";
+import { IdbStore, openDataDisk, openSeedDisk } from "./disk.ts";
 
 export const webDevices: DeviceRegistry = extendDevices(coreDevices, {
 	disks: {
@@ -26,6 +26,9 @@ export const webDevices: DeviceRegistry = extendDevices(coreDevices, {
 			const base = await HttpBase.open(spec.url, opts);
 			const store = spec.persist && typeof indexedDB !== "undefined" ? new IdbStore(spec.persist, { log: ctx.log }) : null;
 			return new CowDisk(base, { store, log: ctx.log, onError: (e) => ctx.onDiskError(ctx.index, e) }).open({ onMismatch: "clear" });
+		},
+		async seed(spec: SeedDiskSpec, ctx: DeviceContext) {
+			return openSeedDisk({ ...spec, log: ctx.log, onError: (e) => ctx.onDiskError(ctx.index, e) });
 		},
 		async data(spec: DataDiskSpec, ctx: DeviceContext) {
 			const template = spec.template === "bundled" ? bundledBoot(ctx.module).datadisk : spec.template;

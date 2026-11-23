@@ -5,7 +5,7 @@
 // the persistent data disk (an ext4 file system kept in IndexedDB).
 import { BaseDisk, CowDisk, HttpBase, SparseBase, ZeroBase, type OverlayStore, type StoreIndex } from "../core/block.ts";
 import { DistroDisk } from "../core/distro.ts";
-import { decodeKwsparse, gunzipIfNeeded, type KwsparseImage } from "../core/kwsparse.ts";
+import { decodeKwsparse, decodeKwsparseHeader, gunzipIfNeeded, type KwsparseImage } from "../core/kwsparse.ts";
 
 const BLOCK = 4096;
 
@@ -214,6 +214,63 @@ export class IdbStore implements OverlayStore {
 		return uid;
 	}
 
+	/**
+	 * Start or resume a chunked seed. An initialized disk is never changed,
+	 * even when the server offers another seed. A different interrupted seed
+	 * may discard only its own incomplete blocks and restart from zero.
+	 */
+	async beginSeed(identity: string, seed: string): Promise<{ initialized: boolean; next: number; uid?: string }> {
+		return this.#run(["blocks", "meta"], "readwrite", async (tx) => {
+			const blocks = tx.objectStore("blocks"), meta = tx.objectStore("meta");
+			const [id, initialized, current, next0, uid0] = await Promise.all([
+				reqP(meta.get("identity")), reqP(meta.get("initialized")), reqP(meta.get("seeding")),
+				reqP(meta.get("seedNext")), reqP(meta.get("uid")),
+			]);
+			if (id !== undefined && id !== identity) {
+				const e = new Error(`the saved disk is "${id}", this page expects "${identity}"; it was left untouched`);
+				e.name = "DataDiskFormatError";
+				throw e;
+			}
+			if (initialized) return { initialized: true, next: 0, uid: typeof uid0 === "string" ? uid0 : undefined };
+			let next = typeof next0 === "number" ? next0 : 0;
+			if (current !== seed) {
+				blocks.clear();
+				next = 0;
+				meta.put(identity, "identity");
+				meta.put(seed, "seeding");
+				meta.put(0, "seedNext");
+				meta.delete("gen");
+				meta.delete("reset");
+			}
+			return { initialized: false, next };
+		});
+	}
+
+	/** Commit one contiguous chunk of a remote seed and its resume position atomically. */
+	async seedBatch(entries: Iterable<[number, Uint8Array]>, next: number): Promise<void> {
+		await this.#run(["blocks", "meta"], "readwrite", (tx) => {
+			const blocks = tx.objectStore("blocks");
+			for (const [b, v] of entries) blocks.put(v, b);
+			tx.objectStore("meta").put(next, "seedNext");
+		});
+	}
+
+	/** Mark a complete chunked seed as the live disk. */
+	async finishSeed(total: number): Promise<string> {
+		const uid = newUid();
+		await this.#run("meta", "readwrite", async (tx) => {
+			const meta = tx.objectStore("meta");
+			const next = await reqP(meta.get("seedNext"));
+			if (next !== total) throw new Error(`seed stopped at block ${next ?? 0}, expected ${total}`);
+			meta.put(true, "initialized");
+			meta.put(uid, "uid");
+			meta.delete("seeding");
+			meta.delete("seedNext");
+			meta.delete("gen");
+		});
+		return uid;
+	}
+
 	/** All records, read in one transaction (a consistent snapshot). */
 	async readAll(): Promise<Map<number, Uint8Array>> {
 		return this.#run("blocks", "readonly", async (tx) => {
@@ -282,6 +339,93 @@ export async function resetHttpDisk(name: string): Promise<void> {
 		await s.clear();
 	} finally {
 		await s.close();
+	}
+}
+
+export interface OpenSeedDiskOptions {
+	/** Range-readable, uncompressed kwsparse image. */
+	url: string;
+	/** Stable machine name and disk-format version. */
+	name: string;
+	version: string;
+	/** Initialization seed identity. It does not replace an initialized disk. */
+	seed: string;
+	/** Default 1024 (4 MiB with 4096-byte blocks). */
+	batchBlocks?: number;
+	log?: (msg: string) => void;
+	onError?: (err: unknown) => void;
+}
+
+async function fetchRange(url: string, start: number, end: number): Promise<{ bytes: Uint8Array; total: number }> {
+	const response = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, cache: "no-store" });
+	if (response.status !== 206) throw new Error(`${url}: Range bytes=${start}-${end}: HTTP ${response.status}, expected 206`);
+	const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get("content-range") ?? "");
+	if (!match || Number(match[1]) !== start || Number(match[2]) !== end)
+		throw new Error(`${url}: bad Content-Range ${JSON.stringify(response.headers.get("content-range"))}`);
+	const bytes = new Uint8Array(await response.arrayBuffer());
+	if (bytes.length !== end - start + 1) throw new Error(`${url}: range returned ${bytes.length} bytes, expected ${end - start + 1}`);
+	return { bytes, total: Number(match[3]) };
+}
+
+/**
+ * Open a persistent disk initialized once from a remote uncompressed
+ * kwsparse image. Seeding is fetched and committed in bounded chunks; a
+ * reload resumes at the first uncommitted payload block. Once initialized,
+ * a newer server seed is ignored and the browser's mutable disk wins.
+ */
+export async function openSeedDisk({ url, name, version, seed, batchBlocks = 1024,
+	log = (m) => console.warn(m), onError }: OpenSeedDiskOptions): Promise<CowDisk> {
+	if (typeof indexedDB === "undefined") throw new Error("no IndexedDB in this browser");
+	if (!Number.isSafeInteger(batchBlocks) || batchBlocks < 1) throw new Error(`bad seed batch size ${batchBlocks}`);
+	const first = await fetchRange(url, 0, 23);
+	const header = decodeKwsparseHeader(first.bytes);
+	if (header.blockSize !== BLOCK) throw new Error(`seed block size ${header.blockSize}, need ${BLOCK}`);
+	const indexBytes = header.blocks * 8;
+	const payloadAt = 24 + indexBytes;
+	const expected = payloadAt + header.blocks * BLOCK;
+	if (first.total !== expected) throw new Error(`${url}: ${first.total} bytes, header expects ${expected}`);
+	const index = indexBytes ? (await fetchRange(url, 24, payloadAt - 1)).bytes : new Uint8Array();
+	const dv = new DataView(index.buffer, index.byteOffset, index.byteLength);
+	const indices = new Array<number>(header.blocks);
+	let previous = -1;
+	for (let i = 0; i < indices.length; i++) {
+		const block = Number(dv.getBigUint64(i * 8, true));
+		if (!(block > previous) || !Number.isSafeInteger(block) || (block + 1) * BLOCK > header.size)
+			throw new Error(`kwsparse: bad or unsorted block index ${block}`);
+		indices[i] = previous = block;
+	}
+	const id = `${name}-${version}`;
+	const identity = `${id} size=${header.size} bs=${BLOCK}`;
+	const store = new IdbStore(id, { log });
+	try {
+		const progress = await store.beginSeed(identity, seed);
+		if (!progress.initialized) {
+			for (let at = progress.next; at < indices.length; at += batchBlocks) {
+				const count = Math.min(batchBlocks, indices.length - at);
+				const start = payloadAt + at * BLOCK;
+				const part = await fetchRange(url, start, start + count * BLOCK - 1);
+				if (part.total !== expected) throw new Error(`${url}: size changed while seeding`);
+				const entries: Array<[number, Uint8Array]> = new Array(count);
+				for (let i = 0; i < count; i++) entries[i] = [indices[at + i]!, part.bytes.slice(i * BLOCK, (i + 1) * BLOCK)];
+				await store.seedBatch(entries, at + count);
+				if (at === progress.next || at + count === indices.length || ((at + count) * BLOCK) % (64 * 1048576) < count * BLOCK)
+					log(`[host] seed disk: stored ${at + count}/${indices.length} blocks (${Math.round((at + count) * 100 / Math.max(1, indices.length))}%)`);
+			}
+			const uid = await store.finishSeed(indices.length);
+			const disk = new CowDisk(new ZeroBase(header.size), { store, log, onError });
+			disk.adoptStore({ keys: new Set(indices), initialized: true, gen: 0, uid }, identity);
+			disk.seeded = true;
+			disk.identity = identity;
+			return disk;
+		}
+		const state = await store.open(identity, { onMismatch: "refuse" });
+		const disk = new CowDisk(new ZeroBase(header.size), { store, log, onError });
+		disk.adoptStore(state, identity);
+		disk.identity = identity;
+		return disk;
+	} catch (error) {
+		await store.close();
+		throw error;
 	}
 }
 

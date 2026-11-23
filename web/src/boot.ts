@@ -28,7 +28,7 @@ import { prefetchApkIndexes } from "./apk.ts";
 import { createAudioOut } from "./audio.ts";
 import { AUTO_SUSPEND_HOLD_MS, AutoSuspend, AutoSuspendSkip, LEAVE_OFFER_MS, LEAVE_STAYED_MS, Pause, SuspendSaveError, allowLeave, autoSuspendLabel, pageLeaving, quietStart, resumeAskedFor, resumeChoice, resumedNote, sessionRoom, wantLeavePrompt, type SuspendFacts } from "./autosuspend.ts";
 import { CPUS_ONCE_KEY, GL_DISTROS, INLINE_ONCE_KEY, REPO, UP_ONCE_KEY } from "./config.ts";
-import { attachDataDisk, detachDataDisk, downloadKwsparse, exportDataDisk, fmtSize, importDataDisk, resetDataDisk, storageState, acquireDiskLock, type DataAttach } from "./data.ts";
+import { attachDataDisk, attachSeedDisk, detachDataDisk, downloadKwsparse, exportDataDisk, fmtSize, importDataDisk, resetDataDisk, storageState, acquireDiskLock, type DataAttach } from "./data.ts";
 import { createDisplayUi } from "./display.ts";
 import { KW } from "./kw.ts";
 import { showcaseFromUrl, waitPort } from "./launcher.ts";
@@ -185,8 +185,9 @@ export function start(): void {
 		ui.check("storage", "Storage", st.persisted ? "pass" : "info", `${st.persisted === undefined ? "persistence unknown" : st.persisted ? "persistent" : "best effort"}, ${usage}`,
 			st.persisted ? "not evicted under storage pressure" : st.persisted === false ? "the browser may evict the saved disks under storage pressure (it did not grant navigator.storage.persist())" : "");
 	}
-	/** Worker mode: the worker's latest snapshot of the data disk (spec 0), if it was built. */
-	const workerData = (): DiskState | undefined => (vm instanceof WorkerKernel ? vm.disks.find((d) => d.index === 0 && d.kind === "data") : undefined);
+	const diskLabel = cfg.portable ? "Root disk" : "Data disk";
+	/** Worker mode: the worker's latest snapshot of the persistent disk (spec 0), if it was built. */
+	const workerData = (): DiskState | undefined => (vm instanceof WorkerKernel ? vm.disks.find((d) => d.index === 0 && d.kind === (cfg.portable ? "seed" : "data")) : undefined);
 	function dataStatus() {
 		const d = data?.disk;
 		const w = d ? undefined : workerData();
@@ -209,7 +210,9 @@ export function start(): void {
 		// Opening IndexedDB, the tab lock, and loading the stored blocks (or seeding from the template).
 		const t0 = performance.now();
 		try {
-			data = await attachDataDisk({ enabled: cfg.data, bundled: bundledBoot(module).datadisk, log: dataLog, onError: saveError });
+			data = cfg.portable
+				? await attachSeedDisk(cfg.portable, { log: dataLog, onError: saveError })
+				: await attachDataDisk({ enabled: cfg.data, bundled: bundledBoot(module).datadisk, log: dataLog, onError: saveError });
 		} catch (e) {
 			data = { disk: null, lock: null, reason: `failed: ${(e as Error).message}` };
 			console.error(e);
@@ -218,13 +221,14 @@ export function start(): void {
 		KW.dataDisk = data.disk;
 		const d = data.disk;
 		showData(d ? { size: d.size, seeded: d.seeded, storedBlocks: d.stored.size } : null, ms);
+		if (cfg.portable && !d) throw new Error(`the portable root disk is unavailable: ${data.reason ?? "unknown error"}`);
 		return d ? [d] : [];
 	}
 	/** The data disk's rows, boot line and status, inline or (from the worker's snapshot) in worker mode. */
 	function showData(d: { size: number; seeded?: boolean; storedBlocks?: number } | null, ms: number) {
 		if (!data) return;
 		if (!d) {
-			ui.check("data", "Data disk", "info", "none", data.reason);
+			ui.check("data", diskLabel, "info", "none", data.reason);
 			ui.dataStatus(`No data disk: ${data.reason}.`);
 			ui.hostLog(`[host] data disk: none (${data.reason}, ${fmtS(ms)})`);
 			if (cfg.data && !/no IndexedDB/.test(data.reason ?? "")) warn(`No data disk: ${data.reason}`, ms);
@@ -232,13 +236,13 @@ export function start(): void {
 		}
 		const dev = distro ? "/dev/wdb" : "/dev/wda"; // the distro image is wda
 		if (data.notice) {
-			ui.check("data", "Data disk", "warn", `${dev}, not saved`, data.notice);
+			ui.check("data", diskLabel, "warn", `${dev}, not saved`, data.notice);
 			warn(`Data disk ${dev}: ${data.notice}`, ms);
 			ui.toast(`Data disk not saved: ${data.notice}`);
 			ui.hostLog(`[host] data disk: ${data.notice}`);
 		} else {
 			const stored = d.storedBlocks ?? 0;
-			ui.check("data", "Data disk", "pass", `${dev} (${fmtSize(d.size)}), saved in this browser`,
+			ui.check("data", diskLabel, "pass", `${dev} (${fmtSize(d.size)}), saved in this browser`,
 				`${d.seeded ? `created from the template (${data.from})` : `${stored} blocks stored`}; lock: ${data.lock?.how}; opened in ${fmtS(ms)}` +
 				(cfg.worker ? "; the kernel worker writes it" : ""));
 			ok(`Attached the data disk ${dev} (${d.seeded ? "new" : `${fmtSize(stored * 4096)} stored`})`, ms);
@@ -256,8 +260,12 @@ export function start(): void {
 		if (!cfg.data) data = { disk: null, lock: null, reason: "off (?data=0)" };
 		else if (typeof indexedDB === "undefined") data = { disk: null, lock: null, reason: "no IndexedDB in this browser" };
 		else {
-			const lock = await acquireDiskLock();
-			data = { disk: null, lock, from: "bundled in the kernel" };
+			const lock = await acquireDiskLock(cfg.portable?.name);
+			data = { disk: null, lock, from: cfg.portable?.url ?? "bundled in the kernel" };
+			if (cfg.portable) {
+				if (!lock.held) throw new Error("this portable machine is open in another tab");
+				return [{ kind: "seed", ...cfg.portable }];
+			}
 			return [{ kind: "data", template: "bundled", mode: lock.held ? "persistent" : "snapshot", optional: true }];
 		}
 		KW.dataDisk = null;
@@ -307,19 +315,19 @@ export function start(): void {
 			// Worker mode: the worker reads the disk (memory and store) and hands over the parts.
 			if (w.persistent && !(await KW.sync!())) ui.hostLog("[host] data disk: the guest did not confirm a sync; exporting what was flushed");
 			const { parts, blocks } = await vm.exportDisk(0);
-			const r = await downloadKwsparse(parts, blocks);
+			const r = await downloadKwsparse(parts, blocks, cfg.portable?.name ?? "kwdata");
 			ui.hostLog(`[host] data disk: exported ${r.blocks} blocks as ${r.name} (${fmtSize(r.bytes)}), from the kernel worker`);
 			return r;
 		}
 		if (!d) throw new Error(`no data disk is attached${data?.reason ? ` (${data.reason})` : ""}`);
 		if (d.persistent && !(await KW.sync!())) ui.hostLog("[host] data disk: the guest did not confirm a sync; exporting what was flushed");
-		const r = await exportDataDisk(d);
+		const r = await exportDataDisk(d, cfg.portable?.name ?? "kwdata");
 		ui.hostLog(`[host] data disk: exported ${r.blocks} blocks as ${r.name} (${fmtSize(r.bytes)})`);
 		return r;
 	};
 	async function takeOverData() {
 		if (data?.lock && !data.lock.held) throw new Error("the data disk is open in another tab; close it first");
-		if (!data?.lock && !(await acquireDiskLock()).held) throw new Error("the data disk is open in another tab; close it first");
+		if (!data?.lock && !(await acquireDiskLock(cfg.portable?.name)).held) throw new Error("the data disk is open in another tab; close it first");
 		if (cfg.worker) {
 			// The kernel worker writes the store: it must stop (and close it) before this page touches it.
 			if (!vm && kernelStarting) throw new Error("the kernel worker is still starting (it may be opening the data disk); try again once it runs");
@@ -338,7 +346,7 @@ export function start(): void {
 	KW.importData = async (file) => {
 		const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
 		await takeOverData();
-		const r = await importDataDisk(bytes, { size: data?.disk?.size ?? workerData()?.size, log: dataLog });
+		const r = await importDataDisk(bytes, { name: cfg.portable?.name, version: cfg.portable?.version, size: data?.disk?.size ?? workerData()?.size, log: dataLog });
 		ui.hostLog(`[host] data disk: imported ${r.blocks} blocks; reloading`);
 		reloadPage();
 		return r;
@@ -346,7 +354,7 @@ export function start(): void {
 	/** Forget the saved data disk (the next boot starts from the template), then reload. */
 	KW.resetData = async () => {
 		await takeOverData();
-		await resetDataDisk();
+		await resetDataDisk({ name: cfg.portable?.name, version: cfg.portable?.version });
 		ui.hostLog("[host] data disk: reset; reloading");
 		reloadPage();
 	};
@@ -1417,8 +1425,9 @@ export function start(): void {
 			warn(cfg.distroWhy);
 			ui.toast(cfg.distroWhy);
 		}
-		ui.check("distro", "Distro", cfg.distroWhy ? "warn" : "info", distro?.name ?? "none (base shell)",
-			cfg.distroWhy ?? (distro ? `${distro.url}, ${fmtMiB(distro.size)}` : "?distro=none: the base initramfs's shell, no distro image"));
+		ui.check("distro", cfg.portable ? "Machine" : "Distro", cfg.distroWhy ? "warn" : "info",
+			cfg.portable ? cfg.portable.name : distro?.name ?? "none (base shell)",
+			cfg.portable ? `mutable NixOS root seeded once from ${cfg.portable.url}` : cfg.distroWhy ?? (distro ? `${distro.url}, ${fmtMiB(distro.size)}` : "?distro=none: the base initramfs's shell, no distro image"));
 		// Inline: opened while the kernel downloads (one Range request and the first 64 KiB).
 		const tDistro = performance.now();
 		const distroOpening = distro && !cfg.worker
@@ -1463,11 +1472,16 @@ export function start(): void {
 		ui.hostLog(`[host] kernel downloaded and compiled in ${fmtS(performance.now() - t0)}`);
 		const bundle = bundledBoot(module);
 		const b = bundle.initrd;
-		if (!b) throw tag(new Error(`${kernelUrl} has no bundled base initramfs`), "compile", "kernel");
-		ui.hostLog(`[host] base initramfs: bundled in ${kernelUrl} (${fmtMiB(b.length)} gzipped)`);
-		ok(`Found the base initramfs (${fmtMiB(b.length)})`);
+		if (!cfg.portable) {
+			if (!b) throw tag(new Error(`${kernelUrl} has no bundled base initramfs`), "compile", "kernel");
+			ui.hostLog(`[host] base initramfs: bundled in ${kernelUrl} (${fmtMiB(b.length)} gzipped)`);
+			ok(`Found the base initramfs (${fmtMiB(b.length)})`);
+		} else {
+			ui.hostLog("[host] direct-root boot: the bundled initramfs is not used");
+			ok("Selected the mutable NixOS root");
+		}
 		// The bundle's own command line unless ?append= gives one, with ?root= (kw.root=) after it.
-		if (!cfg.append && bundle.cmdline) cfg.cmdline = cfg.root ? `${bundle.cmdline} kw.root=${cfg.root}` : bundle.cmdline;
+		if (!cfg.portable && !cfg.append && bundle.cmdline) cfg.cmdline = cfg.root ? `${bundle.cmdline} kw.root=${cfg.root}` : bundle.cmdline;
 		// Guest GL: the guest's shells point Mesa at virgl, at the vtest link where there is no
 		// /dev/dri render node (kw-gl.sh in the base's kw layer).
 		if (cfg.gl) cfg.cmdline += " kw.gl=1";
@@ -1548,7 +1562,8 @@ export function start(): void {
 			}
 		};
 		const common = {
-			cmdline: cfg.cmdline, memoryMiB: cfg.memMiB, memoryFallbackMiB: cfg.memFallbackMiB, jit: cfg.jit,
+			cmdline: cfg.cmdline, initrd: cfg.portable ? null : undefined,
+			memoryMiB: cfg.memMiB, memoryFallbackMiB: cfg.memFallbackMiB, jit: cfg.jit,
 			consoleSize: { cols: term.cols, rows: term.rows },
 			onOutput: consoleWrite, log, onProgress,
 			display: cfg.display ? display.size : false, onDisplay: display.onDisplay, onInput: display.onInput,
