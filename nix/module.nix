@@ -456,7 +456,10 @@ in
             inherit (cfg) port;
           }
         ];
-        extraConfig = isolationHeaders;
+        extraConfig = ''
+          absolute_redirect off;
+          ${isolationHeaders}
+        '';
         locations = {
           "/" = {
             proxyPass = "http://127.0.0.1:${toString cfg.runtimePort}";
