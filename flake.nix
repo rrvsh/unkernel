@@ -103,7 +103,11 @@
             inherit (finalAttrs) pname version src;
             inherit (pkgs) pnpm;
             fetcherVersion = 4;
-            hash = "sha256-LIJiLIq/xd4efrRCiSmWLTtYaGX35Hnm2M/1/YQc50M=";
+            hash =
+              if pkgs.stdenv.hostPlatform.system == "x86_64-linux" then
+                "sha256-VaDpCHVmlM6VnNxoCZbwbmERBAlRvDLAu1wW3uyc2p8="
+              else
+                "sha256-LIJiLIq/xd4efrRCiSmWLTtYaGX35Hnm2M/1/YQc50M=";
           };
 
           nativeBuildInputs = [
