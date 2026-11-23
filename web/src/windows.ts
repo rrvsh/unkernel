@@ -388,7 +388,7 @@ export function createWindows(opts: WindowsOptions): Windows {
 		};
 		w.term = new WTerm(el, {
 			...TERM_OPTIONS,
-			onData: (d) => input(w, KW.ui ? KW.ui.applyCtrl(d) : d),
+			onData: (d) => input(w, KW.ui ? KW.ui.applyModifiers(d) : d),
 			onBinary: (d) => input(w, d),
 			onResize: (cols, rows) => { const px = pixels(w); w.session?.resize(cols, rows, px.x, px.y); },
 		});

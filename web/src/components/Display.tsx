@@ -587,28 +587,38 @@ function Pad({ opts, rot, portrait, rotate, layout, tablet, touchMode, controls 
 	const [kbd, setKbd] = useState(false);
 	const composing = useRef(false);
 	const was = useRef(SENTINEL);
-	const tapKey = (code: number, shift = false, ctrl = false) => {
+	const tapKey = (code: number, shift = false, ctrl = false, alt = false) => {
 		const ev = evdev()!;
 		if (ctrl) ev.key(KEY.ctrl, true);
+		if (alt) ev.key(KEY.alt, true);
 		if (shift) ev.key(KEY.shift, true);
 		ev.key(code, true);
 		ev.key(code, false);
 		if (shift) ev.key(KEY.shift, false);
+		if (alt) ev.key(KEY.alt, false);
 		if (ctrl) ev.key(KEY.ctrl, false);
 	};
-	/** The key bar's Ctrl is latched: it applies to the next key, then lets go. */
-	const takeCtrl = () => {
-		const on = ui$().get().ctrl;
-		if (on) KW.ui?.setCtrl(false);
-		return on;
+	/** The key bar's modifiers are latched: they apply to the next key, then let go. */
+	const takeModifiers = () => {
+		const { ctrl, alt } = ui$().get();
+		if (ctrl) KW.ui?.setCtrl(false);
+		if (alt) KW.ui?.setAlt(false);
+		return { ctrl, alt };
 	};
 	const typeText = (text: string, backspaces: number) => {
 		if (evdev()?.keyboardOpen) {
 			for (let i = 0; i < backspaces; i++) tapKey(14);
-			for (const c of text) { const k = CHAR_KEY.get(c); if (k) tapKey(k[0], k[1], takeCtrl()); }
+			for (const c of text) {
+				const k = CHAR_KEY.get(c);
+				if (k) {
+					const modifiers = takeModifiers();
+					tapKey(k[0], k[1], modifiers.ctrl, modifiers.alt);
+				}
+			}
 		} else {
-			// The terminal's own Ctrl rule, on the first character.
-			if (text && ui$().get().ctrl) text = (KW.ui?.applyCtrl(text[0]!) ?? text[0]!) + text.slice(1);
+			// The terminal's own latched modifiers, on the first character.
+			const modifiers = ui$().get();
+			if (text && (modifiers.ctrl || modifiers.alt)) text = (KW.ui?.applyModifiers(text[0]!) ?? text[0]!) + text.slice(1);
 			opts.sendTty("\x7f".repeat(backspaces) + text.replace(/\n/g, "\r"));
 		}
 	};
@@ -618,10 +628,14 @@ function Pad({ opts, rot, portrait, rotate, layout, tablet, touchMode, controls 
 	const barPress = (k: string) => {
 		if (!evdev()?.keyboardOpen) return KW.ui?.pressKey(k);
 		if (k === "ctrl") return KW.ui?.setCtrl(!ui$().get().ctrl);
-		if (k === "^c") return void (takeCtrl(), tapKey(domCodeToLinux("KeyC")!, false, true));
+		if (k === "alt") return KW.ui?.setAlt(!ui$().get().alt);
+		if (k === "^c") return void (takeModifiers(), tapKey(domCodeToLinux("KeyC")!, false, true));
 		const c = CHAR_KEY.get(k);
 		const code = BAR_KEY[k] ?? c?.[0];
-		if (code !== undefined) tapKey(code, c?.[1] ?? false, takeCtrl());
+		if (code !== undefined) {
+			const modifiers = takeModifiers();
+			tapKey(code, c?.[1] ?? false, modifiers.ctrl, modifiers.alt);
+		}
 	};
 	const kbdInput = () => {
 		const el = kbdRef.current!, now = el.value, old = was.current;

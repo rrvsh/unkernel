@@ -101,6 +101,8 @@ export interface UiState {
 	distro: { name: string; image: string; url: string } | null;
 	/** The key bar's Ctrl is armed. */
 	ctrl: boolean;
+	/** The key bar's Alt/Meta is armed. */
+	alt: boolean;
 	/** The key bar is showing (phones, on-screen keyboard up). */
 	keysOn: boolean;
 	pasteOpen: boolean;

@@ -362,7 +362,7 @@ export function start(): void {
 	setTermFont(termEl, cfg.fontSize);
 	const term = new WTerm(termEl, {
 		...TERM_OPTIONS,
-		onData: (d) => send(ui.applyCtrl(d)),
+		onData: (d) => send(ui.applyModifiers(d)),
 		onBinary: (d) => send(d),
 		onResize: (cols, rows) => vm?.resize(cols, rows), // SIGWINCH
 	});

@@ -175,7 +175,7 @@ export function createUi(cfg: Config) {
 			? `Safe mode: the root is the plain ${imageName} (kw.root=initramfs, until you leave safe mode); /data is mounted as usual and your root changes stay in ${upperDir}. kw-overlay status explains, sudo kw-overlay discard starts over from the image.`
 			: null,
 		distro: cfg.distro ? { name: cfg.distro.name, image: cfg.distro.imageId ?? "", url: cfg.distro.url } : null,
-		ctrl: false, keysOn: false, pasteOpen: false, ask: null, paused: false, prefix: false,
+		ctrl: false, alt: false, keysOn: false, pasteOpen: false, ask: null, paused: false, prefix: false,
 		fontPref, fontSize: cfg.fontSize, copyText: null,
 		display: { attached: false, shown: true, width: 0, height: 0, keyboard: false, mouse: false, tablet: false,
 			rotate: store("fbRotate") === "1", layout: padLayout(store("padLayout")),
@@ -437,30 +437,43 @@ export function createUi(cfg: Config) {
 		reboot,
 		setOption<K extends keyof Options>(k: K, v: Options[K]) { $.set((s) => ({ options: { ...s.options, [k]: v } })); },
 
-		/** Turn the next typed character into its control code when the key bar's Ctrl is armed. */
-		applyCtrl(d: string): string {
-			if (!$.get().ctrl || d.length !== 1) return d;
+		/** Apply the key bar's latched Ctrl and Alt/Meta to the next typed character. */
+		applyModifiers(d: string): string {
+			const { ctrl, alt } = $.get();
+			if ((!ctrl && !alt) || d.length !== 1) return d;
 			ui.setCtrl(false);
-			const c = d.charCodeAt(0);
-			if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) return String.fromCharCode(c & 31);
-			const map: Record<string, number> = { "@": 0, " ": 0, "2": 0, "[": 27, "3": 27, "\\": 28, "4": 28, "]": 29, "5": 29, "^": 30, "6": 30, "~": 30, "_": 31, "-": 31, "/": 31, "7": 31, "?": 127, "8": 127 };
-			return d in map ? String.fromCharCode(map[d]!) : d;
+			ui.setAlt(false);
+			let out = d;
+			if (ctrl) {
+				const c = d.charCodeAt(0);
+				if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) out = String.fromCharCode(c & 31);
+				else {
+					const map: Record<string, number> = { "@": 0, " ": 0, "2": 0, "[": 27, "3": 27, "\\": 28, "4": 28, "]": 29, "5": 29, "^": 30, "6": 30, "~": 30, "_": 31, "-": 31, "/": 31, "7": 31, "?": 127, "8": 127 };
+					if (d in map) out = String.fromCharCode(map[d]!);
+				}
+			}
+			return alt ? `\x1b${out}` : out;
 		},
 		setCtrl(on: boolean) { $.set({ ctrl: on }); },
-		/** A key bar button: arrows, Esc, Tab, ^C, Ctrl (latches), Paste, or a character. */
+		setAlt(on: boolean) { $.set({ alt: on }); },
+		/** A key bar button: arrows, Esc, Tab, ^C, Ctrl/Alt (latching), Paste, or a character. */
 		pressKey(k: string) {
-			const ctrl = $.get().ctrl;
+			const { ctrl, alt } = $.get();
 			if (k === "ctrl") { ui.setCtrl(!ctrl); return; }
-			if (k === "paste") { ui.setCtrl(false); openPaste(); return; }
+			if (k === "alt") { ui.setAlt(!alt); return; }
+			if (k === "paste") { ui.setCtrl(false); ui.setAlt(false); openPaste(); return; }
 			if (!KW.term) return;
 			const arrows: Record<string, string> = { up: "A", down: "B", right: "C", left: "D" };
 			let seq: string;
-			if (arrows[k]) seq = ctrl ? `\x1b[1;5${arrows[k]}` : (KW.term.appCursor() ? "\x1bO" : "\x1b[") + arrows[k];
-			else if (k === "esc") seq = "\x1b";
+			if (arrows[k]) {
+				const modifier = 1 + (alt ? 2 : 0) + (ctrl ? 4 : 0);
+				seq = modifier > 1 ? `\x1b[1;${modifier}${arrows[k]}` : (KW.term.appCursor() ? "\x1bO" : "\x1b[") + arrows[k];
+			} else if (k === "esc") seq = "\x1b";
 			else if (k === "tab") seq = "\t";
 			else if (k === "^c") seq = "\x03";
-			else seq = ui.applyCtrl(k);
+			else seq = ui.applyModifiers(k);
 			ui.setCtrl(false);
+			ui.setAlt(false);
 			KW.term.send(seq);
 		},
 		closePaste() { $.set({ pasteOpen: false }); KW.term?.focus(); },

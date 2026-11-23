@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Pooya Parsa <pooya@pi0.io>
 // The extra-keys bar: phones only, and only while the on-screen keyboard is
-// up (App.tsx decides). Esc, Tab, a latching Ctrl, ^C, arrows, a few symbols
+// up (App.tsx decides). Esc, Tab, latching Ctrl and Alt, ^C, arrows, a few symbols
 // and Paste. The display's soft keyboard (Display.tsx) shows one too, with
 // its own press (key presses for the guest) and without Paste there.
 import { useRef, type MouseEvent, type TouchEvent } from "react";
@@ -11,7 +11,8 @@ import { useStore } from "../store.ts";
 type K = { key: string; label: string; word?: boolean; aria?: string; title?: string } | "gap";
 const KEYS: K[] = [
 	{ key: "esc", label: "Esc", word: true }, { key: "tab", label: "Tab", word: true },
-	{ key: "ctrl", label: "Ctrl", word: true }, { key: "^c", label: "^C", word: true, title: "Ctrl-C" },
+	{ key: "ctrl", label: "Ctrl", word: true }, { key: "alt", label: "Alt", word: true },
+	{ key: "^c", label: "^C", word: true, title: "Ctrl-C" },
 	"gap",
 	{ key: "left", label: "←", aria: "Left" }, { key: "up", label: "↑", aria: "Up" },
 	{ key: "down", label: "↓", aria: "Down" }, { key: "right", label: "→", aria: "Right" },
@@ -31,6 +32,7 @@ export function Keys({ show, onPress, omit, className = "" }: {
 	className?: string;
 } = {}) {
 	const ctrl = useStore((s) => s.ctrl);
+	const alt = useStore((s) => s.alt);
 	const keysOn = useStore((s) => s.keysOn);
 	const on = show ?? keysOn;
 	// Keep focus (and so the on-screen keyboard) on the terminal: a mouse
@@ -60,7 +62,7 @@ export function Keys({ show, onPress, omit, className = "" }: {
 				: (
 					<button
 						key={k.key} type="button" data-key={k.key} aria-label={k.aria} title={k.title}
-						aria-pressed={k.key === "ctrl" ? ctrl : undefined}
+						aria-pressed={k.key === "ctrl" ? ctrl : k.key === "alt" ? alt : undefined}
 						className={`h-9.5 min-w-9 flex-[1_0_auto] touch-manipulation border border-line bg-surface px-2 text-fg active:bg-hover aria-pressed:border-fg aria-pressed:bg-fg aria-pressed:text-black ${k.word ? "text-[12.5px] font-medium" : "font-mono text-[16px]"}`}
 					>{k.label}</button>
 				))}
