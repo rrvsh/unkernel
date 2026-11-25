@@ -1513,6 +1513,8 @@ export function start(): void {
 		const log = (m: string) => {
 			console.log(m);
 			ui.hostLog(m);
+			const seed = /^\[host\] seed disk: stored \d+\/\d+ blocks \((\d+)%\)$/.exec(m);
+			if (seed) setLive(" .... ", `Creating the mutable NixOS root (${seed[1]}%)`);
 			if (distro && !distroReadFailed && /^\[host\] block: wda op 0 /.test(m)) {
 				distroReadFailed = true;
 				KW.report("distro", `Reading the ${distro.name} image failed: the guest gets I/O errors from its root. If the image was rebuilt or the server stopped, reload the page.`, m, false);
